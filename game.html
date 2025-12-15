@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galactic Repopulation: Solar Run</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050510;
+            color: white;
+            font-family: 'Courier New', Courier, monospace;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            pointer-events: none;
+        }
+        .stat-box {
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border: 2px solid #444;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            display: inline-block;
+        }
+        #fuel-bar-container {
+            width: 300px;
+            height: 20px;
+            background: #333;
+            border: 2px solid white;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-top: 5px;
+        }
+        #fuel-bar {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, #ff4d4d, #ffff00, #00ff00);
+            transform-origin: left;
+            transition: width 0.1s linear;
+        }
+        #message-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.85);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            z-index: 10;
+        }
+        h1 { font-size: 3em; margin: 0; text-shadow: 0 0 10px cyan; }
+        p { font-size: 1.2em; max-width: 600px; }
+        button {
+            padding: 15px 30px;
+            font-size: 1.5em;
+            background: #00ccff;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px;
+            font-family: inherit;
+            margin-top: 20px;
+        }
+        button:hover { background: #0099cc; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="stat-box">
+            <div id="mission-text" style="font-weight:bold; color: cyan;">MISSION: MERCURY</div>
+            <div>STATUS: <span id="status-text">Go to Planet</span></div>
+        </div>
+        <br>
+        <div class="stat-box">
+            <div>FUEL TANK</div>
+            <div id="fuel-bar-container"><div id="fuel-bar"></div></div>
+        </div>
+        <br>
+        <div class="stat-box">
+            TIME: <span id="timer">0.00</span>s
+        </div>
+    </div>
+
+    <div id="message-overlay">
+        <h1 id="title-text">GALACTIC REPOPULATION</h1>
+        <p id="desc-text">
+            Pilot the ship to planets, pick up aliens, and bring them back to Earth.<br><br>
+            Use <b>Arrow Keys</b> to fly.<br>
+            Follow the <b>RED ARROW</b> to your target.<br>
+            Watch your <b>FUEL</b>.<br>
+            Avoid <b>ASTEROIDS</b>.
+        </p>
+        <button id="start-btn" onclick="startGame()">LAUNCH SHIP</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // UI Elements
+    const fuelBar = document.getElementById('fuel-bar');
+    const missionText = document.getElementById('mission-text');
+    const statusText = document.getElementById('status-text');
+    const timerDisplay = document.getElementById('timer');
+    const overlay = document.getElementById('message-overlay');
+    const titleText = document.getElementById('title-text');
+    const descText = document.getElementById('desc-text');
+    const startBtn = document.getElementById('start-btn');
+
+    // Game Constants
+    const FRICTION = 0.98; // Space drift friction (closer to 1 = more drift)
+    const THRUST = 0.15;
+    const ROTATION_SPEED = 0.08;
+    const MAX_SPEED = 12;
+    const SHIP_SIZE = 30;
+    
+    // Solar System Data (Distances scaled for gameplay)
+    // Earth is at 0,0. Distances are pixels from Earth.
+    const PLANETS = [
+        { name: "Mercury", dist: 2000, color: "#A5A5A5", icon: "🌑", size: 60 },
+        { name: "Venus", dist: 3500, color: "#E3BB76", icon: "🌕", size: 70 },
+        { name: "Mars", dist: 5000, color: "#FF4500", icon: "🪐", size: 65 }, // Using ringed planet icon for visual variety
+        { name: "Jupiter", dist: 8000, color: "#D9A066", icon: "🟠", size: 120 },
+        { name: "Saturn", dist: 11000, color: "#F4C542", icon: "🪐", size: 110 },
+        { name: "Uranus", dist: 14000, color: "#4FD0E7", icon: "🔵", size: 90 },
+        { name: "Neptune", dist: 17000, color: "#4b70dd", icon: "🔵", size: 90 },
+        { name: "Pluto", dist: 21000, color: "#CCC", icon: "⚪", size: 40 }
+    ];
+
+    let gameState = "START"; // START, PLAYING, GAMEOVER, WIN
+    let startTime = 0;
+    let frameId;
+    
+    // Inputs
+    const keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
+
+    // Game Objects
+    let ship = { x: 0, y: 0, vx: 0, vy: 0, angle: -Math.PI/2, fuel: 500, maxFuel: 500 };
+    let stars = [];
+    let obstacles = [];
+    let currentPlanetIndex = 0;
+    let hasAlien = false;
+    let currentMission = null;
+
+    // Resize handling
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Input handling
+    window.addEventListener('keydown', (e) => { if(keys.hasOwnProperty(e.code)) keys[e.code] = true; });
+    window.addEventListener('keyup', (e) => { if(keys.hasOwnProperty(e.code)) keys[e.code] = false; });
+
+    function initGame() {
+        ship = { x: 0, y: 0, vx: 0, vy: 0, angle: -Math.PI/2, fuel: 100, maxFuel: 100 };
+        currentPlanetIndex = 0;
+        hasAlien = false;
+        obstacles = [];
+        stars = [];
+        
+        // Generate Stars
+        for(let i=0; i<300; i++) {
+            stars.push({
+                x: Math.random() * 3000 - 1500, // Relative positions
+                y: Math.random() * 3000 - 1500,
+                size: Math.random() * 2 + 1
+            });
+        }
+
+        setupMission();
+        startTime = Date.now();
+    }
+
+    function setupMission() {
+        if(currentPlanetIndex >= PLANETS.length) {
+            victory();
+            return;
+        }
+
+        const pData = PLANETS[currentPlanetIndex];
+        // Random angle for planet location so players don't just fly right every time
+        const angle = Math.random() * Math.PI * 2;
+        
+        currentMission = {
+            targetName: pData.name,
+            x: Math.cos(angle) * pData.dist,
+            y: Math.sin(angle) * pData.dist,
+            icon: pData.icon,
+            size: pData.size,
+            visited: false
+        };
+
+        // Populate obstacles between Earth (0,0) and Planet
+        generateObstacles(pData.dist);
+        
+        // Reset fuel for the trip
+        ship.fuel = ship.maxFuel;
+        hasAlien = false;
+        updateUI();
+    }
+
+    function generateObstacles(distance) {
+        // Density increases with distance
+        const count = Math.floor(distance / 15); 
+        
+        // Add new obstacles to the array (we keep old ones to simulate a persistent universe)
+        for(let i=0; i<count; i++) {
+            // Generate random point within the radius of the mission
+            const angle = Math.random() * Math.PI * 2;
+            const r = Math.random() * distance;
+            
+            // Don't spawn too close to Earth (Safe zone 500px)
+            if (r < 500) continue;
+
+            obstacles.push({
+                x: Math.cos(angle) * r,
+                y: Math.sin(angle) * r,
+                type: Math.random() > 0.5 ? "🪨" : "🛰️",
+                size: Math.random() * 30 + 20,
+                rotation: Math.random() * Math.PI
+            });
+        }
+    }
+
+    function startGame() {
+        overlay.classList.add('hidden');
+        initGame();
+        gameState = "PLAYING";
+        loop();
+    }
+
+    function update() {
+        if (gameState !== "PLAYING") return;
+
+        // 1. Ship Physics (Drift & Thrust)
+        if (keys.ArrowLeft) ship.angle -= ROTATION_SPEED;
+        if (keys.ArrowRight) ship.angle += ROTATION_SPEED;
+        
+        if (keys.ArrowUp) {
+            ship.vx += Math.cos(ship.angle) * THRUST;
+            ship.vy += Math.sin(ship.angle) * THRUST;
+            
+            // Fuel consumption
+            ship.fuel -= 0.02; // consumption rate
+        } else if (keys.ArrowDown) {
+            // Brake
+            ship.vx *= 0.95;
+            ship.vy *= 0.95;
+            ship.fuel -= 0.05;
+        }
+
+        // Apply friction (Space Drift)
+        ship.vx *= FRICTION;
+        ship.vy *= FRICTION;
+
+        // Cap speed
+        const speed = Math.sqrt(ship.vx*ship.vx + ship.vy*ship.vy);
+        if(speed > MAX_SPEED) {
+            ship.vx = (ship.vx / speed) * MAX_SPEED;
+            ship.vy = (ship.vy / speed) * MAX_SPEED;
+        }
+
+        ship.x += ship.vx;
+        ship.y += ship.vy;
+
+        // 2. Fuel Check
+        ship.fuel -= 0.00; // Idle consumption (life support!)
+        if (ship.fuel <= 0) {
+            gameOver("OUT OF FUEL");
+        }
+
+        // 3. Collision Detection
+        
+        // Obstacles
+        for (let obs of obstacles) {
+            let dist = Math.hypot(ship.x - obs.x, ship.y - obs.y);
+            // Hitbox slightly smaller than visual
+            if (dist < (obs.size/2 + SHIP_SIZE/2) * 0.8) {
+                gameOver("HULL BREACH: HIT OBSTACLE");
+            }
+        }
+
+        // Objective Logic
+        if (!hasAlien) {
+            // Target is Planet
+            let dist = Math.hypot(ship.x - currentMission.x, ship.y - currentMission.y);
+            if (dist < (currentMission.size/2 + SHIP_SIZE/2)) {
+                hasAlien = true;
+                ship.fuel = ship.maxFuel; // Refuel at planet
+                statusText.innerText = "Return to Earth!";
+                statusText.style.color = "#ff4d4d"; // Red warning
+            }
+        } else {
+            // Target is Earth (0,0)
+            let dist = Math.hypot(ship.x - 0, ship.y - 0);
+            if (dist < (100/2 + SHIP_SIZE/2)) { // Earth size approx 100
+                // Mission Complete
+                currentPlanetIndex++;
+                setupMission();
+            }
+        }
+
+        updateUI();
+    }
+
+    function updateUI() {
+        const timeNow = (Date.now() - startTime) / 1000;
+        timerDisplay.innerText = timeNow.toFixed(2);
+
+        fuelBar.style.width = Math.max(0, ship.fuel) + "%";
+        
+        if(hasAlien) {
+            missionText.innerText = `RETURNING ALIEN FROM ${currentMission.targetName.toUpperCase()}`;
+            statusText.innerText = "Navigate back to Earth";
+        } else {
+            missionText.innerText = `MISSION: ${currentMission.targetName.toUpperCase()}`;
+            statusText.innerText = "Locate Planet";
+        }
+    }
+
+    function draw() {
+        // Clear screen
+        ctx.fillStyle = '#050510';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Camera calculations (Center the ship)
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
+
+        // Save context for camera transform
+        ctx.save();
+        ctx.translate(cx - ship.x, cy - ship.y);
+
+        // 1. Draw Stars (Background) - Parallax effect
+        // We calculate star positions relative to camera to make infinite field illusion
+        ctx.fillStyle = "white";
+        for (let s of stars) {
+            // Simple infinite tiling logic
+            let sx = (s.x - ship.x * 0.5) % 3000; // Parallax factor 0.5
+            let sy = (s.y - ship.y * 0.5) % 3000;
+            if (sx < -1500) sx += 3000;
+            if (sx > 1500) sx -= 3000;
+            if (sy < -1500) sy += 3000;
+            if (sy > 1500) sy -= 3000;
+            
+            ctx.beginPath();
+            ctx.arc(ship.x + sx, ship.y + sy, s.size, 0, Math.PI*2);
+            ctx.fill();
+        }
+
+        // 2. Draw Earth (0,0)
+        ctx.font = "100px Arial";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("🌍", 0, 0);
+        ctx.font = "20px Courier New";
+        ctx.fillStyle = "#AAA";
+        ctx.fillText("EARTH BASE", 0, 70);
+
+        // 3. Draw Current Planet
+        ctx.font = `${currentMission.size}px Arial`;
+        ctx.fillText(currentMission.icon, currentMission.x, currentMission.y);
+        ctx.font = "20px Courier New";
+        ctx.fillStyle = currentMission.color;
+        ctx.fillText(currentMission.targetName, currentMission.x, currentMission.y + currentMission.size/1.5);
+
+        // 4. Draw Obstacles
+        for (let obs of obstacles) {
+            // Optimization: Only draw if on screen
+            if (Math.abs(obs.x - ship.x) < cx + 100 && Math.abs(obs.y - ship.y) < cy + 100) {
+                ctx.save();
+                ctx.translate(obs.x, obs.y);
+                ctx.rotate(obs.rotation);
+                ctx.font = `${obs.size}px Arial`;
+                ctx.fillText(obs.type, 0, 0);
+                ctx.restore();
+            }
+        }
+
+        // Restore context to draw ship and UI overlays
+        ctx.restore();
+
+        // 5. Draw Ship (Always at center)
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(ship.angle + Math.PI/4); // Adjust for emoji orientation
+        ctx.font = "40px Arial";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("🚀", 0, 0);
+        
+        // Thruster flame
+        // if (keys.ArrowUp) {
+        //     ctx.font = "20px Arial";
+        //     ctx.fillText("🔥", -25, 15);
+        // }
+        // ctx.restore();
+        // Thruster flame
+        if (keys.ArrowUp) {
+            ctx.save();            // 1. Save the current rotation
+            ctx.translate(0, 35);  // 2. Move "pen" to behind the ship (Adjust 35 to move further back)
+            ctx.rotate(Math.PI);   // 3. Rotate the flame 180 degrees (flip it upside down)
+            ctx.font = "20px Arial";
+            ctx.fillText("🔥", -25, 15); // 4. Draw flame
+            ctx.restore();         // 5. Restore rotation so the rest of the game doesn't flip
+        }
+
+        // 6. Draw Alien if we have it
+        if (hasAlien) {
+            ctx.font = "20px Arial";
+            ctx.fillText("👽", cx + 15, cy - 15);
+        }
+
+        // 7. Navigation Compass (The most important part!)
+        drawCompass(cx, cy);
+    }
+
+    function drawCompass(cx, cy) {
+        let targetX, targetY;
+        
+        if (hasAlien) {
+            targetX = 0; // Earth
+            targetY = 0;
+        } else {
+            targetX = currentMission.x;
+            targetY = currentMission.y;
+        }
+
+        // Angle from ship to target
+        const angleToTarget = Math.atan2(targetY - ship.y, targetX - ship.x);
+        
+        // Distance
+        const dist = Math.hypot(targetX - ship.x, targetY - ship.y);
+
+        // Draw arrow
+        const compassRadius = 100;
+        const arrowX = cx + Math.cos(angleToTarget) * compassRadius;
+        const arrowY = cy + Math.sin(angleToTarget) * compassRadius;
+
+        ctx.save();
+        ctx.translate(arrowX, arrowY);
+        ctx.rotate(angleToTarget);
+        
+        ctx.beginPath();
+        ctx.moveTo(10, 0);
+        ctx.lineTo(-10, 7);
+        ctx.lineTo(-10, -7);
+        ctx.fillStyle = "#ff0000";
+        ctx.fill();
+        
+        // Draw distance text
+        ctx.rotate(-angleToTarget); // Reset rotation for text
+        ctx.fillStyle = "white";
+        ctx.font = "14px Courier New";
+        ctx.fillText(Math.floor(dist) + "km", 20, 0);
+        ctx.restore();
+    }
+
+    function loop() {
+        if (gameState === "PLAYING") {
+            update();
+            draw();
+            frameId = requestAnimationFrame(loop);
+        }
+    }
+
+    function gameOver(reason) {
+        gameState = "GAMEOVER";
+        cancelAnimationFrame(frameId);
+        overlay.classList.remove('hidden');
+        titleText.innerText = "GAME OVER";
+        titleText.style.color = "red";
+        descText.innerHTML = `${reason}<br><br>You reached planet: ${currentMission.targetName}<br>Try again!`;
+        startBtn.innerText = "RESTART MISSION";
+    }
+
+    function victory() {
+        gameState = "WIN";
+        const totalTime = (Date.now() - startTime) / 1000;
+        cancelAnimationFrame(frameId);
+        overlay.classList.remove('hidden');
+        titleText.innerText = "GALAXY SAVED!";
+        titleText.style.color = "#00ff00";
+        descText.innerHTML = `You repopulated Earth with aliens from all planets!<br><br><b>Final Time: ${totalTime.toFixed(2)}s</b>`;
+        startBtn.innerText = "PLAY AGAIN";
+    }
+
+</script>
+</body>
+</html>
